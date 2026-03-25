@@ -326,3 +326,9 @@ MIT
 **will@strandintelligence.com**
 
 We build software to support incident response across business email compromise, ransomware, infostealer, and cloud compromise cases.
+
+---
+
+## Disclaimer
+
+This tool is based on publicly reported IOCs from the sources listed above. The threat landscape around this incident is actively evolving and new indicators may emerge after publication. A clear result reduces your exposure surface but does not constitute a forensic clean bill of health. Organisations seeking full confidence over the current or historic state of their environment should engage a qualified forensic investigator.

@@ -150,12 +150,20 @@ MALICIOUS_COMMIT_SHAS: FrozenSet[str] = frozenset({
     # trivy repo — Source: GHSA + CrowdStrike
     "1885610c6a34811c8296416ae69f568002ef11ec",  # Malicious release commit [GHSA, CrowdStrike]
     "70379aad1a8b40919ce8b382d3cd7d0315cde1d0",  # Rogue actions/checkout [GHSA, CrowdStrike]
-    # KICS action — Source: Checkmarx official, StepSecurity, KICS GitHub issue
-    "8e20c7a67bb95632e2040327a355fb97e6014d29",  # Checkmarx/kics-github-action malicious commit [multi-source]
-    # NOTE: 0e22ec8d... (ramimac only) excluded — secondary sources confirm 8e20c7a6... instead
-    # LiteLLM — Source: ramimac.me/teampcp
-    "fcaa823de07878d0d98e97f6f5552c0e2ac00d2f",  # BerriAI/litellm secrets exfil [ramimac]
-    "81c851cc00313c44effd421712523f294b18391e",  # BerriAI/litellm-skills secrets exfil [ramimac]
+    # NOTE: KICS SHA (8e20c7a6...) is handled separately via KICS_COMPROMISED_COMMIT/
+    #       _KICS_RE in GitHubActionsScanner — not included here to avoid dead code.
+    # NOTE: LiteLLM SHAs are in LITELLM_MALICIOUS_COMMIT_SHAS below; checked via
+    #       git cat-file in GitHistoryScanner (not action pins).
+    # NOTE: 0e22ec8d... (ramimac only) excluded — secondary sources confirm 8e20c7a6...
+})
+
+# --- Malicious LiteLLM Repository Commit SHAs ---
+# These are commits to BerriAI/litellm and BerriAI/litellm-skills that stole secrets.
+# Checked via git cat-file in GitHistoryScanner (not action pins — no trivy-action involved).
+# Source: ramimac.me/teampcp
+LITELLM_MALICIOUS_COMMIT_SHAS: FrozenSet[str] = frozenset({
+    "fcaa823de07878d0d98e97f6f5552c0e2ac00d2f",  # BerriAI/litellm secrets exfil
+    "81c851cc00313c44effd421712523f294b18391e",  # BerriAI/litellm-skills secrets exfil
 })
 
 # Safe commit SHAs for pinning
@@ -1433,7 +1441,9 @@ class DockerContainerScanner(BaseScanner):
             rel = os.path.relpath(fpath, str(root))
 
             for match in self._IMAGE_RE.finditer(content):
-                tag = match.group(1)
+                # Handle tag@sha256:digest form (e.g. trivy:0.69.4@sha256:abc...).
+                # Strip the digest half so version checks work — _DIGEST_RE handles the digest.
+                tag = match.group(1).split("@")[0]
                 if tag in ("0.69.4", "0.69.5", "0.69.6", "v0.69.4", "v0.69.5", "v0.69.6"):
                     self.add_finding(
                         Severity.CRITICAL,
@@ -2029,6 +2039,23 @@ class GitHistoryScanner(BaseScanner):
                     evidence=output.strip()[:200],
                     remediation="Review these commits to determine if they indicate exposure.",
                 )
+
+            # Check for known malicious LiteLLM commits in this repo's object store
+            # These appear if the repo has BerriAI/litellm cloned and fetched the bad commits,
+            # or if litellm is a submodule pinned to a malicious SHA.
+            for sha in LITELLM_MALICIOUS_COMMIT_SHAS:
+                result = run_cmd(["git", "-C", repo, "cat-file", "-t", sha])
+                if result and result.strip() == "commit":
+                    self.add_finding(
+                        Severity.CRITICAL,
+                        f"Malicious LiteLLM commit in repository ({repo_name})",
+                        f"Repository contains commit {sha[:12]}..., a known malicious BerriAI/litellm commit "
+                        "that exfiltrated secrets. This indicates the repo had litellm cloned or as a "
+                        "submodule at the point of compromise.",
+                        file_path=repo,
+                        evidence=sha,
+                        remediation="Rotate all secrets accessible from this repository. Audit litellm usage and remove the malicious commit from history.",
+                    )
 
             # Check for tpcp-docs in repo names/descriptions
             git_config = os.path.join(repo, ".git", "config")

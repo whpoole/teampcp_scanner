@@ -1,4 +1,4 @@
-# teampcp-scanner
+# TeamPCP / Trivy Compromise Scanner
 ### Detect exposure to the TeamPCP / Trivy supply chain attack — CVE-2026-33634
 
 On 19 March 2026, threat actor **TeamPCP** compromised Aqua Security's Trivy vulnerability scanner and triggered a cascading supply chain attack across GitHub Actions, Docker Hub, 66+ npm packages, and the LiteLLM Python library. Over 1,000 cloud environments have been impacted.

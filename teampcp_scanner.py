@@ -52,7 +52,7 @@ __author__ = "Strand Security"
 # IOC DATABASE
 # Last updated: 2026-03-25
 # Sources: GHSA-69fq-xp46-6x23, CrowdStrike, StepSecurity, Datadog, Microsoft,
-#          Palo Alto Networks, Wiz, Endor Labs, JFrog, Socket.dev
+#          Palo Alto Networks, Wiz, Endor Labs, JFrog, Socket.dev, ramimac.me/teampcp
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # --- Malicious Trivy v0.69.4 Binary Hashes (SHA256) ---
@@ -121,6 +121,8 @@ MALICIOUS_DOCKER_DIGESTS: FrozenSet[str] = frozenset({
     "sha256:cc464a3961e1dbe145c75343b55c2f446e08b821782ec993728c4222b0d85589",  # signature [GHSA]
     # v0.69.5 — manifest digest confirmed by Discussion #10425
     "sha256:5aaa1d7cfa9ca4649d6ffad165435c519dc836fa6e21b729a2174ad10b057d2b",  # manifest [GHSA]
+    # NOTE: sha256:f69a8a41... (ramimac Docker Hub push digest) excluded — contradicts GHSA
+    #       advisory which attributes 5aaa1d7c... to v0.69.5; omitted pending confirmation.
     "sha256:95ff680103570179feb0c6667a9b9b2d98c53fa5a9a451265036810390bbe70a",  # linux/arm64 [GHSA]
     "sha256:4f7a06bb51714713ab308d2f8125f3b09ee1c3ffbba1a5ffd0cc80da95fbb6cc",  # linux/ppc64le [GHSA]
     "sha256:edef8e5816eced552a909b878ff262c0c47776d3297bcc23796ad4cce1e85414",  # linux/s390x [GHSA]
@@ -148,6 +150,12 @@ MALICIOUS_COMMIT_SHAS: FrozenSet[str] = frozenset({
     # trivy repo — Source: GHSA + CrowdStrike
     "1885610c6a34811c8296416ae69f568002ef11ec",  # Malicious release commit [GHSA, CrowdStrike]
     "70379aad1a8b40919ce8b382d3cd7d0315cde1d0",  # Rogue actions/checkout [GHSA, CrowdStrike]
+    # KICS action — Source: Checkmarx official, StepSecurity, KICS GitHub issue
+    "8e20c7a67bb95632e2040327a355fb97e6014d29",  # Checkmarx/kics-github-action malicious commit [multi-source]
+    # NOTE: 0e22ec8d... (ramimac only) excluded — secondary sources confirm 8e20c7a6... instead
+    # LiteLLM — Source: ramimac.me/teampcp
+    "fcaa823de07878d0d98e97f6f5552c0e2ac00d2f",  # BerriAI/litellm secrets exfil [ramimac]
+    "81c851cc00313c44effd421712523f294b18391e",  # BerriAI/litellm-skills secrets exfil [ramimac]
 })
 
 # Safe commit SHAs for pinning
@@ -267,6 +275,8 @@ C2_IOCS: List[Tuple[str, str]] = [
     ("plug-tab-protective-relay.trycloudflare.com", "Cloudflare tunnel C2 [WZ]"),
     # Phase 1 exfiltration — Source: SafeDep blog
     ("recv.hackmoltrepeat.com", "Phase 1 PAT theft exfiltration [SafeDep]"),
+    # KICS C2 server — Source: ramimac.me/teampcp
+    ("83.142.209.11", "KICS chain C2 IP — resolves checkmarx.zone [ramimac]"),
 ]
 
 # --- System Persistence Paths ---
@@ -692,7 +702,15 @@ class GitHubActionsScanner(BaseScanner):
         r'uses:\s*["\']?aquasecurity/(trivy-action|setup-trivy)@([^\s"\'#]+)',
         re.IGNORECASE,
     )
+    _KICS_RE = re.compile(
+        r'uses:\s*["\']?Checkmarx/kics-github-action@([^\s"\'#]+)',
+        re.IGNORECASE,
+    )
     _PRT_RE = re.compile(r'pull_request_target', re.IGNORECASE)
+
+    # KICS action: all tags v1–v2.1.20 compromised 2026-03-23 12:58–16:50 UTC
+    # Source: Checkmarx official, StepSecurity, KICS GitHub issue
+    KICS_COMPROMISED_COMMIT = "8e20c7a67bb95632e2040327a355fb97e6014d29"
 
     def scan(self):
         root = self.config.scan_path or Path(".")
@@ -730,8 +748,9 @@ class GitHubActionsScanner(BaseScanner):
                     )
                     continue
 
-                # Is it a full SHA (40 hex chars)?
-                if re.match(r'^[0-9a-f]{40}$', ref):
+                # Is it a full SHA (40 hex chars)? Use IGNORECASE: GitHub SHAs are lowercase
+                # but uppercase is valid hex and should not be misclassified as a mutable tag.
+                if re.match(r'^[0-9a-f]{40}$', ref, re.IGNORECASE):
                     # Pinned to SHA but not a known-bad one
                     self.add_finding(
                         Severity.INFO,
@@ -795,10 +814,44 @@ class GitHubActionsScanner(BaseScanner):
                             remediation=f"Pin to commit SHA {SAFE_SETUP_TRIVY_SHA}",
                         )
 
+            # Check for KICS GitHub Action (compromised 2026-03-23, all tags v1–v2.1.20)
+            for kmatch in self._KICS_RE.finditer(content):
+                ref = kmatch.group(1)
+                if ref.lower() == self.KICS_COMPROMISED_COMMIT.lower():
+                    self.add_finding(
+                        Severity.CRITICAL,
+                        "Known malicious kics-github-action commit SHA",
+                        f"Workflow pins to the confirmed malicious KICS commit: {ref}",
+                        file_path=rel,
+                        evidence=kmatch.group(0),
+                        remediation="Pin to a verified post-remediation SHA from the official Checkmarx/kics-github-action repository. Rotate all secrets.",
+                    )
+                elif re.match(r'^[0-9a-f]{40}$', ref, re.IGNORECASE):
+                    self.add_finding(
+                        Severity.INFO,
+                        "kics-github-action pinned to SHA (verify safety)",
+                        f"SHA-pinned reference — verify it is not the compromised commit ({self.KICS_COMPROMISED_COMMIT[:12]}...): {ref}",
+                        file_path=rel,
+                        evidence=kmatch.group(0),
+                        remediation="Verify this SHA against the official Checkmarx repository post-remediation commits.",
+                    )
+                else:
+                    # Any tag ref (v1, v2.1.0, etc.) was compromised
+                    self.add_finding(
+                        Severity.CRITICAL,
+                        f"kics-github-action using compromised tag: {ref}",
+                        "All Checkmarx/kics-github-action tags v1–v2.1.20 were force-pushed to "
+                        "malicious code on 2026-03-23 12:58–16:50 UTC. If this workflow ran "
+                        "during that window, secrets were stolen.",
+                        file_path=rel,
+                        evidence=kmatch.group(0),
+                        remediation="Pin to a verified post-remediation SHA from the official Checkmarx/kics-github-action repository. Rotate all secrets accessible to this workflow.",
+                    )
+
             # Check for pull_request_target (the original attack vector)
             if self._PRT_RE.search(content):
-                # Only flag if this workflow also references trivy/aquasecurity
-                if re.search(r'aquasecurity|trivy', content, re.IGNORECASE):
+                # Only flag if this workflow also references trivy/aquasecurity/kics
+                if re.search(r'aquasecurity|trivy|checkmarx/kics', content, re.IGNORECASE):
                     self.add_finding(
                         Severity.MEDIUM,
                         "pull_request_target with Trivy reference",
@@ -1346,7 +1399,11 @@ class DockerContainerScanner(BaseScanner):
     category_name = "docker_container"
     display_name = "Docker / Container Images"
 
-    _IMAGE_RE = re.compile(r'aquasec/trivy[:\s]+([^\s"\']+)', re.IGNORECASE)
+    # Matches aquasec/trivy, aquasecurity/trivy, and mirror.gcr.io/aquasec/trivy variants
+    _IMAGE_RE = re.compile(
+        r'(?:mirror\.gcr\.io/)?(?:aquasec(?:urity)?)/trivy[:\s@]+([^\s"\']+)',
+        re.IGNORECASE,
+    )
     _DIGEST_RE = re.compile(r'(sha256:[0-9a-f]{64})', re.IGNORECASE)
 
     def _scan_files(self):
@@ -1367,7 +1424,9 @@ class DockerContainerScanner(BaseScanner):
             content = safe_read_text(fpath)
             if not content:
                 continue
-            if "aquasec/trivy" not in content.lower() and "aquasecurity/trivy" not in content.lower():
+            cl = content.lower()
+            if ("aquasec/trivy" not in cl and "aquasecurity/trivy" not in cl
+                    and "mirror.gcr.io" not in cl):
                 continue
 
             self.items_scanned += 1
@@ -1500,6 +1559,7 @@ class SystemPersistenceScanner(BaseScanner):
             b"tdtqy-oyaaa-aaaae-af2dq-cai",   # ICP canister ID
             b"aquasecurtiy",                    # Typosquat C2 domain
             b"tpcp",                            # TeamPCP marker
+            b"TeamPCP Cloud stealer",           # Payload self-attribution string [ramimac]
             b"checkmarx.zone",                  # C2 domain
             b"models.litellm.cloud",            # Exfil domain
             b"pglog",                           # Staging path reference
@@ -1936,15 +1996,22 @@ class GitHistoryScanner(BaseScanner):
             output = run_cmd(["git", "-C", repo, "remote", "-v"])
             if output:
                 for line in output.split("\n"):
-                    if "tpcp-docs" in line.lower():
+                    ll = line.lower()
+                    # tpcp-docs = Trivy/CanisterWorm exfil pattern [GHSA,CS,SS]
+                    # docs-tpcp = KICS chain exfil pattern [multi-source]
+                    # Use boundary regex to avoid "my-docs-tpcp-extension" false positives
+                    _m = re.search(r'(?:^|[/\s:@])(tpcp-docs|docs-tpcp)(?:[/\s.@]|\.git|$)', ll)
+                    if _m:
+                        pattern = _m.group(1)
                         self.add_finding(
                             Severity.CRITICAL,
-                            f"Exfiltration repo 'tpcp-docs' in remotes ({repo_name})",
-                            "The TeamPCP malware uses 'tpcp-docs' repos as fallback exfiltration. "
+                            f"Exfiltration repo '{pattern}' in remotes ({repo_name})",
+                            "The TeamPCP malware uses 'tpcp-docs' (Trivy/CanisterWorm chain) and "
+                            "'docs-tpcp' (KICS chain) repos as credential exfiltration destinations. "
                             "This is a strong indicator that credentials were stolen from this system.",
                             file_path=repo,
                             evidence=line.strip(),
-                            remediation="Investigate this remote. Rotate ALL credentials immediately. Check GitHub for public tpcp-docs repos in your org.",
+                            remediation="Investigate this remote. Rotate ALL credentials immediately. Check GitHub for public tpcp-docs/docs-tpcp repos in your org.",
                         )
 
             # Check git log during attack window
@@ -1967,11 +2034,11 @@ class GitHistoryScanner(BaseScanner):
             git_config = os.path.join(repo, ".git", "config")
             if os.path.isfile(git_config):
                 content = safe_read_text(git_config)
-                if content and "tpcp-docs" in content.lower():
+                if content and re.search(r'(?:^|[/\s:@])(tpcp-docs|docs-tpcp)(?:[/\s.@]|\.git|$)', content, re.IGNORECASE | re.MULTILINE):
                     self.add_finding(
                         Severity.CRITICAL,
-                        f"tpcp-docs reference in git config ({repo_name})",
-                        "TeamPCP exfiltration indicator found in git configuration.",
+                        f"TeamPCP exfiltration repo reference in git config ({repo_name})",
+                        "TeamPCP exfiltration indicator (tpcp-docs or docs-tpcp) found in git configuration.",
                         file_path=git_config,
                     )
 
@@ -2035,12 +2102,17 @@ class CredentialExposureScanner(BaseScanner):
     def _scan_system(self):
         """Check system-level credential files that TeamPCP targets."""
         home = str(Path.home())
+        ssh_dir = os.path.join(home, ".ssh")
         system_creds = [
             (os.path.join(home, ".npmrc"), "npm global auth token"),
             (os.path.join(home, ".pypirc"), "PyPI credentials"),
             (os.path.join(home, ".aws", "credentials"), "AWS credentials"),
             (os.path.join(home, ".docker", "config.json"), "Docker registry credentials"),
             (os.path.join(home, ".kube", "config"), "Kubernetes config"),
+            # SSH private keys — explicitly harvested by TeamPCP [ramimac]
+            (os.path.join(ssh_dir, "id_rsa"), "SSH private key (RSA)"),
+            (os.path.join(ssh_dir, "id_ed25519"), "SSH private key (Ed25519)"),
+            (os.path.join(ssh_dir, "id_ecdsa"), "SSH private key (ECDSA)"),
         ]
 
         for cred_path, desc in system_creds:

@@ -121,8 +121,9 @@ MALICIOUS_DOCKER_DIGESTS: FrozenSet[str] = frozenset({
     "sha256:cc464a3961e1dbe145c75343b55c2f446e08b821782ec993728c4222b0d85589",  # signature [GHSA]
     # v0.69.5 — manifest digest confirmed by Discussion #10425
     "sha256:5aaa1d7cfa9ca4649d6ffad165435c519dc836fa6e21b729a2174ad10b057d2b",  # manifest [GHSA]
-    # NOTE: sha256:f69a8a41... (ramimac Docker Hub push digest) excluded — contradicts GHSA
-    #       advisory which attributes 5aaa1d7c... to v0.69.5; omitted pending confirmation.
+    "sha256:f69a8a4180c43fc427532ddde34a256acbd041a0a07844cf7e4d3e0434e5bcd1",  # v0.69.5 Docker Hub push digest [ramimac, Wiz]
+    # NOTE: this digest is absent from the GHSA enumeration but GHSA confirms all 0.69.5 images
+    #       are malicious; ramimac.me + Wiz both list this digest explicitly. Inclusion is correct.
     "sha256:95ff680103570179feb0c6667a9b9b2d98c53fa5a9a451265036810390bbe70a",  # linux/arm64 [GHSA]
     "sha256:4f7a06bb51714713ab308d2f8125f3b09ee1c3ffbba1a5ffd0cc80da95fbb6cc",  # linux/ppc64le [GHSA]
     "sha256:edef8e5816eced552a909b878ff262c0c47776d3297bcc23796ad4cce1e85414",  # linux/s390x [GHSA]
@@ -844,17 +845,33 @@ class GitHubActionsScanner(BaseScanner):
                         remediation="Verify this SHA against the official Checkmarx repository post-remediation commits.",
                     )
                 else:
-                    # Any tag ref (v1, v2.1.0, etc.) was compromised
-                    self.add_finding(
-                        Severity.CRITICAL,
-                        f"kics-github-action using compromised tag: {ref}",
-                        "All Checkmarx/kics-github-action tags v1–v2.1.20 were force-pushed to "
-                        "malicious code on 2026-03-23 12:58–16:50 UTC. If this workflow ran "
-                        "during that window, secrets were stolen.",
-                        file_path=rel,
-                        evidence=kmatch.group(0),
-                        remediation="Pin to a verified post-remediation SHA from the official Checkmarx/kics-github-action repository. Rotate all secrets accessible to this workflow.",
-                    )
+                    # v2.1.20 is the clean remediation release published by Checkmarx.
+                    # Anything at or above v2.1.20 is safe; anything below is compromised.
+                    # Use (2,1,20) as the safe floor — tags v1 through v2.1.19 are malicious.
+                    _KICS_SAFE_FLOOR = (2, 1, 20)
+                    _v = parse_version(ref)
+                    if _v is not None and _v >= _KICS_SAFE_FLOOR:
+                        self.add_finding(
+                            Severity.INFO,
+                            f"kics-github-action on safe tag: {ref}",
+                            "Tag is at or above v2.1.20, the Checkmarx remediation release. "
+                            "Consider pinning to a specific SHA for supply chain hygiene.",
+                            file_path=rel,
+                            evidence=kmatch.group(0),
+                            remediation="Pin to a specific commit SHA from the post-remediation repository.",
+                        )
+                    else:
+                        # Unparseable tags (main, latest) or confirmed compromised version range
+                        self.add_finding(
+                            Severity.CRITICAL,
+                            f"kics-github-action using compromised tag: {ref}",
+                            "All Checkmarx/kics-github-action tags before v2.1.20 were force-pushed to "
+                            "malicious code on 2026-03-23 12:58–16:50 UTC. If this workflow ran "
+                            "during that window, secrets were stolen.",
+                            file_path=rel,
+                            evidence=kmatch.group(0),
+                            remediation="Pin to a verified post-remediation SHA from the official Checkmarx/kics-github-action repository. Rotate all secrets accessible to this workflow.",
+                        )
 
             # Check for pull_request_target (the original attack vector)
             if self._PRT_RE.search(content):

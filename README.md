@@ -5,6 +5,8 @@ On 19 March 2026, threat actor **TeamPCP** compromised Aqua Security's Trivy vul
 
 This tool gives security teams and developers a single command to determine whether their infrastructure, codebases, or machines were exposed — going far beyond dependency scanning to detect compromised binaries by hash, active persistence on disk, C2 domain references in code, malicious Kubernetes workloads, and credential harvesting risk.
 
+**This is a point-in-time "are we compromised now?" scanner.** It checks your current state — what's on disk, what's installed, what your code references today. It is not a substitute for forensic investigation into whether compromise occurred historically. If you need to answer "did this ever touch us?", a clean result here is useful context but not a definitive answer.
+
 **Zero external dependencies. Python 3.8+. Runs on macOS, Linux, and Windows.**
 
 ---
@@ -99,13 +101,13 @@ Creates synthetic IOC fixtures in a temp directory and validates all 10 detectio
 The scanner runs **10 detection modules** in parallel, each targeting a specific attack vector from the TeamPCP campaign.
 
 ### 1 — GitHub Actions Workflows
-Recursively walks `.github/workflows/` for all `.yml`/`.yaml` files and scans for `trivy-action` and `setup-trivy` references. For each reference found it checks:
+Recursively walks `.github/workflows/` for all `.yml`/`.yaml` files and scans for `trivy-action`, `setup-trivy`, and `kics-github-action` references. For each reference found it checks:
 
 - Is the ref a **known malicious commit SHA**? → CRITICAL
-- Is it a **tag in the compromised range** (trivy-action v0.0.1–v0.34.2, setup-trivy v0.0.1–v0.2.5)? → CRITICAL
+- Is it a **tag in the compromised range** (trivy-action v0.0.1–v0.34.2, setup-trivy v0.0.1–v0.2.5, kics-github-action before v2.1.20)? → CRITICAL
 - Is it an **unknown SHA pin** (40 hex chars, not in the known-bad list)? → INFO (manual verification needed)
 - Is it a **mutable tag outside** the compromised range? → MEDIUM
-- Does the workflow use `pull_request_target` alongside any Trivy reference? → MEDIUM (original attack vector)
+- Does the workflow use `pull_request_target` alongside any Trivy or KICS reference? → MEDIUM (original attack vector)
 
 ### 2 — Trivy Binary Installation
 *(Requires `--system` or a scan path)*
@@ -155,6 +157,7 @@ Scans every readable text file in the scan path for **14 known C2 domains and IP
 | `tdtqy-oyaaa-aaaae-af2dq-cai.raw.icp0.io` | ICP C2 | Multiple |
 | `models.litellm.cloud` | Exfil domain | Datadog, Snyk |
 | `checkmarx.zone` | C2 domain | CrowdStrike, StepSecurity |
+| `83.142.209.11` | IP (KICS chain) | Wiz, Sysdig, StepSecurity |
 | `recv.hackmoltrepeat.com` | C2 domain | CrowdStrike |
 | Cloudflare tunnel endpoints (6) | Tunnel C2 | CrowdStrike, StepSecurity, SafeDep |
 
@@ -165,8 +168,9 @@ Scans YAML and JSON manifests for TeamPCP wiper components by name: DaemonSets `
 
 ### 9 — Git History & Exfiltration
 Finds all git repositories under the scan path and checks:
-- Remotes for `tpcp-docs` repository names (TeamPCP's credential exfiltration repo pattern)
+- Remotes for `tpcp-docs` repository names (Trivy/CanisterWorm chain exfiltration pattern) and `docs-tpcp` (KICS chain exfiltration pattern)
 - Commit history during the attack window (Mar 19–24, 2026) for Trivy-related changes that may indicate a compromised workflow ran and pushed
+- Repository object store for known malicious LiteLLM commit SHAs (indicates litellm was cloned or used as a submodule at the time of compromise)
 
 ### 10 — Credential Exposure Assessment
 Identifies credential files that would have been in scope for harvesting: `.npmrc` files with auth tokens, `.env` files, AWS credential files, SSH private keys, `.pypirc`, Docker config with registry credentials. Reports as MEDIUM — this is a risk assessment of what was exposed, not confirmation that theft occurred. With `--system`, extends to system-wide locations (`~/.npmrc`, `~/.aws/credentials`, `~/.ssh/`, etc.).
@@ -287,9 +291,9 @@ Every IOC is verified against published primary sources and annotated inline wit
 | Category | Count | Sources |
 |----------|-------|---------|
 | Trivy binary SHA256 hashes | 32 | GHSA (26), Wiz (6) |
-| Docker image digests | 15 | GHSA |
-| Malicious Git commit SHAs | 9 | GHSA, StepSecurity, CrowdStrike |
-| C2 domains and IPs | 14 | CrowdStrike, StepSecurity, Datadog, Microsoft, Wiz, Aikido, SafeDep |
+| Docker image digests | 16 | GHSA, Wiz, ramimac.me |
+| Malicious Git commit SHAs | 10 | GHSA, StepSecurity, CrowdStrike, Checkmarx |
+| C2 domains and IPs | 15 | CrowdStrike, StepSecurity, Datadog, Microsoft, Wiz, Sysdig, Aikido, SafeDep |
 | Compromised npm packages | 66+ | Endor Labs, JFrog, Socket.dev, Datadog |
 | LiteLLM file hashes | 3 | Snyk |
 | System persistence paths | 10+ | CrowdStrike, StepSecurity, Datadog, Aikido |
@@ -331,4 +335,4 @@ We build software to support incident response across business email compromise,
 
 ## Disclaimer
 
-This tool is based on publicly reported IOCs from the sources listed above. The threat landscape around this incident is actively evolving and new indicators may emerge after publication. A clear result reduces your exposure surface but does not constitute a forensic clean bill of health. Organisations seeking full confidence over the current or historic state of their environment should engage a qualified forensic investigator.
+This tool is based on publicly reported IOCs from the sources listed above. The threat landscape around this incident is actively evolving and new indicators may emerge after publication. A clear result reduces your exposure surface but does not constitute a forensic clean bill of health. Organisations seeking full confidence over the current or historic state of their environment can contact Strand for advice.
